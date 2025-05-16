@@ -213,12 +213,9 @@ func DoGeneratedRequest[ResponseType any](
 
 	defer resp.Body.Close()
 
-	var body []byte
+	var temp interface{} = responseObj
 
-	body, err = io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("unable to parse response body for %s %s due to %s", r.Method, r.URL, err)
-	}
+	var body []byte
 
 	// if the response object is nil, only non-200 indicates error
 	if responseObj == nil {
@@ -234,9 +231,22 @@ func DoGeneratedRequest[ResponseType any](
 		return nil
 	}
 
-	var temp interface{} = responseObj
 	if statusCoder, ok := temp.(CodedResponse); ok {
 		statusCoder.NewCode(resp.StatusCode)
+	}
+
+	if captureReader, ok := temp.(CaptureReader); ok {
+		err = captureReader.Capture(resp.Body)
+		if err != nil {
+			return fmt.Errorf("unable to capture response body for %s %s due to %s", r.Method, r.URL, err)
+		}
+
+		return nil
+	} else {
+		body, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("unable to parse response body for %s %s due to %s", r.Method, r.URL, err)
+		}
 	}
 
 	if erredResponse, ok := temp.(ErredResponse); ok {

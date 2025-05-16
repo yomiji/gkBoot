@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	"golang.org/x/net/http2"
+	http2 "golang.org/x/net/http2"
 
 	"github.com/yomiji/gkBoot/helpers"
 	"github.com/yomiji/gkBoot/request"
@@ -21,7 +22,8 @@ import (
 )
 
 var (
-	HTTP2GlobalCA = []*tls.Config{nil}
+	MalformedRequestErr = errors.New("malformed request")
+	HTTP2GlobalCA       = []*tls.Config{nil}
 )
 
 // SkipClientValidation is an interface that can be implemented by a request object to skip client validation
@@ -30,32 +32,32 @@ var (
 //
 // Example Usage:
 //
-//	type MyRequest struct {
-//	    // request fields
-//	}
+//    type MyRequest struct {
+//        // request fields
+//    }
 //
-//	func (r *MyRequest) Info() request.HttpRouteInfo {
-//	    // return HttpRouteInfo
-//	}
+//    func (r *MyRequest) Info() request.HttpRouteInfo {
+//        // return HttpRouteInfo
+//    }
 //
-//	func (r *MyRequest) Validate() error {
-//	    // return validation error
-//	}
+//    func (r *MyRequest) Validate() error {
+//        // return validation error
+//    }
 //
-//	func (r *MyRequest) SkipClientValidation() {
-//	    // implement the interface to skip client validation
-//	}
+//    func (r *MyRequest) SkipClientValidation() {
+//        // implement the interface to skip client validation
+//    }
 //
-//	func main() {
-//	    request := &MyRequest{}
+//    func main() {
+//        request := &MyRequest{}
 //
-//	    // Generate *http.Request object
-//	    httpRequest, err := GenerateClientRequest(baseUrl, request)
-//	    if err != nil {
-//	        // Handle error
-//	    }
-//	    // Use the *http.Request object for making the HTTP request
-//	}
+//        // Generate *http.Request object
+//        httpRequest, err := GenerateClientRequest(baseUrl, request)
+//        if err != nil {
+//            // Handle error
+//        }
+//        // Use the *http.Request object for making the HTTP request
+//    }
 type SkipClientValidation interface {
 	SkipClientValidation()
 }
@@ -82,20 +84,20 @@ func (u UsingSkipClientValidation) SkipClientValidation() {}
 //
 // Example Usage:
 //
-//	type MyRequester struct {}
+//    type MyRequester struct {}
 //
-//	func (r *MyRequester) Request(ctx context.Context) (*http.Request, error) {
-//	    // Implement the logic to create and return the *http.Request object
-//	}
+//    func (r *MyRequester) Request(ctx context.Context) (*http.Request, error) {
+//        // Implement the logic to create and return the *http.Request object
+//    }
 //
-//	func main() {
-//	    requester := &MyRequester{}
-//	    request, err := requester.Request(context.Background())
-//	    if err != nil {
-//	        // Handle error
-//	    }
-//	    // Use the *http.Request object for making the HTTP request
-//	}
+//    func main() {
+//        requester := &MyRequester{}
+//        request, err := requester.Request(context.Background())
+//        if err != nil {
+//            // Handle error
+//        }
+//        // Use the *http.Request object for making the HTTP request
+//    }
 type Requester interface {
 	Request(ctx context.Context) (*http.Request, error)
 }
@@ -123,32 +125,33 @@ func GenerateClientRequest(baseUrl string, serviceRequest request.HttpRequest) (
 		return nil, fmt.Errorf("client generation failed, %s, attempted url: %s", err, joinedStr)
 	}
 
+	var srMethod = serviceRequest.Info().Method
+
 	// shortcut request generation using a Requester
 	if requester, ok := serviceRequest.(Requester); ok {
 		var r *http.Request
 		r, err = requester.Request(context.Background())
 		if err != nil {
-			return nil, fmt.Errorf("client generation failed [%s] %w", joinedStr, err)
+			return nil, fmt.Errorf("client generation failed [%s] %w %w", joinedStr, err, MalformedRequestErr)
 		}
 		r.URL = u
+		r.Method = string(srMethod)
 		return r, nil
 	}
 
-	// plan to assign values to a raw struct using generator below
 	clientValue := reflect.ValueOf(serviceRequest)
 
+	// Deref one layer of pointer if necessary
 	if clientValue.Kind() == reflect.Ptr {
 		clientValue = clientValue.Elem()
 	}
 
+	// Check if we have a struct (required)
 	if clientValue.Kind() != reflect.Struct {
 		return nil, fmt.Errorf("non-struct client not supported")
 	}
 
-	var srMethod = serviceRequest.Info().Method
 	var srName = serviceRequest.Info().Name
-
-	baseUrl = strings.TrimRight(baseUrl, "/")
 
 	var requestResult *http.Request
 
@@ -174,10 +177,10 @@ func GenerateClientRequest(baseUrl string, serviceRequest request.HttpRequest) (
 }
 
 func DoRequest[RequestType request.HttpRequest, ResponseType any](
-	baseUrl string,
-	clientRequest RequestType,
-	responseObj *ResponseType,
-	tlsConfig ...*tls.Config,
+		baseUrl string,
+		clientRequest RequestType,
+		responseObj *ResponseType,
+		tlsConfig ...*tls.Config,
 ) error {
 	c, err := GenerateClientRequest(baseUrl, clientRequest)
 	if err != nil {
@@ -188,7 +191,7 @@ func DoRequest[RequestType request.HttpRequest, ResponseType any](
 }
 
 func DoGeneratedRequest[ResponseType any](
-	r *http.Request, responseObj *ResponseType, tlsConfig ...*tls.Config,
+		r *http.Request, responseObj *ResponseType, tlsConfig ...*tls.Config,
 ) error {
 	client := http.DefaultClient
 
@@ -203,12 +206,9 @@ func DoGeneratedRequest[ResponseType any](
 
 	defer resp.Body.Close()
 
-	var body []byte
+	var temp interface{} = responseObj
 
-	body, err = io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("unable to parse response body for %s %s due to %s", r.Method, r.URL, err)
-	}
+	var body []byte
 
 	// if the response object is nil, only non-200 indicates error
 	if responseObj == nil {
@@ -224,10 +224,22 @@ func DoGeneratedRequest[ResponseType any](
 		return nil
 	}
 
-	var temp interface{} = responseObj
-
 	if statusCoder, ok := temp.(response.CodedResponse); ok {
 		statusCoder.NewCode(resp.StatusCode)
+	}
+
+	if captureReader, ok := temp.(response.CaptureReader); ok {
+		err = captureReader.Capture(resp.Body)
+		if err != nil {
+			return fmt.Errorf("unable to capture response body for %s %s due to %s", r.Method, r.URL, err)
+		}
+
+		return nil
+	} else {
+		body, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("unable to parse response body for %s %s due to %s", r.Method, r.URL, err)
+		}
 	}
 
 	if erredResponse, ok := temp.(response.ErredResponse); ok {
@@ -453,8 +465,8 @@ func convertSliceToStringValue(value reflect.Value, urlEncode bool) string {
 }
 
 type typicalClientRequestWriter func(
-	r *http.Request, fieldName string, fieldValue reflect.Value, isRequired bool,
-	urlEncode bool,
+		r *http.Request, fieldName string, fieldValue reflect.Value, isRequired bool,
+		urlEncode bool,
 ) error
 
 func returnClientOperationByTagValue(tagName string) typicalClientRequestWriter {
@@ -473,8 +485,8 @@ func returnClientOperationByTagValue(tagName string) typicalClientRequestWriter 
 }
 
 func writeRequestCookie(
-	r *http.Request, fieldName string, fieldValue reflect.Value, isRequired bool,
-	urlEncode bool,
+		r *http.Request, fieldName string, fieldValue reflect.Value, isRequired bool,
+		urlEncode bool,
 ) error {
 	var convertedValue = convertBaseValueToString(fieldValue, urlEncode)
 
@@ -499,8 +511,8 @@ func writeRequestCookie(
 }
 
 func writeRequestHeader(
-	r *http.Request, fieldName string, fieldValue reflect.Value, isRequired bool,
-	urlEncode bool,
+		r *http.Request, fieldName string, fieldValue reflect.Value, isRequired bool,
+		urlEncode bool,
 ) error {
 	var convertedValue = convertBaseValueToString(fieldValue, urlEncode)
 
@@ -520,7 +532,7 @@ func writeRequestHeader(
 }
 
 func writeRequestQueryParam(
-	r *http.Request, fieldName string, fieldValue reflect.Value, isRequired bool, urlEncode bool,
+		r *http.Request, fieldName string, fieldValue reflect.Value, isRequired bool, urlEncode bool,
 ) error {
 	var convertedValue = convertBaseValueToString(fieldValue, false)
 
@@ -561,8 +573,8 @@ func writeRequestBody(r *http.Request, fieldName string, fieldValue reflect.Valu
 }
 
 func writeRequestPath(
-	r *http.Request, fieldName string, fieldValue reflect.Value, isRequired bool,
-	urlEncode bool,
+		r *http.Request, fieldName string, fieldValue reflect.Value, isRequired bool,
+		urlEncode bool,
 ) error {
 	var convertedValue = convertBaseValueToString(fieldValue, urlEncode)
 
