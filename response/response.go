@@ -2,8 +2,15 @@ package response
 
 import (
 	"fmt"
+	"io"
 	"sync"
 )
+
+// CaptureReader
+// Captures the reader for processing instead of performing a JSON marshal operation
+type CaptureReader interface {
+	Capture(reader io.Reader) error
+}
 
 // CodedResponse
 // An object implementing this can track the response code from server / client. Complements kitDefaults.StatusCoder
