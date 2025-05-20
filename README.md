@@ -18,9 +18,9 @@ In gkBoot, I tried to capture much of that while still maintaining that
 which makes Go great. Hopefully you like it too.
 
 ## Installation
-*Note: Please use go 1.18 for installation*
+*Note: Please use go 1.24 for installation*
 ```bash
-go get github.com/yomiji/gkBoot@v1.0.0
+go get github.com/yomiji/gkBoot@v1.6.0
 ```
 
 ## Use
