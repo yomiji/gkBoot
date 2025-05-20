@@ -211,11 +211,29 @@ func DoGeneratedRequest[ResponseType any](
 		return err
 	}
 
-	defer resp.Body.Close()
-
 	var temp interface{} = responseObj
 
+	if statusCoder, ok := temp.(CodedResponse); ok {
+		statusCoder.NewCode(resp.StatusCode)
+	}
+
+	if captureReader, ok := temp.(CaptureReader); ok {
+		err = captureReader.Capture(resp.Body)
+		if err != nil {
+			return fmt.Errorf("unable to capture response body for %s %s due to %s", r.Method, r.URL, err)
+		}
+
+		return nil
+	}
+
+	defer resp.Body.Close()
+
 	var body []byte
+
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("unable to parse response body for %s %s due to %s", r.Method, r.URL, err)
+	}
 
 	// if the response object is nil, only non-200 indicates error
 	if responseObj == nil {
@@ -229,24 +247,6 @@ func DoGeneratedRequest[ResponseType any](
 		}
 
 		return nil
-	}
-
-	if statusCoder, ok := temp.(CodedResponse); ok {
-		statusCoder.NewCode(resp.StatusCode)
-	}
-
-	if captureReader, ok := temp.(CaptureReader); ok {
-		err = captureReader.Capture(resp.Body)
-		if err != nil {
-			return fmt.Errorf("unable to capture response body for %s %s due to %s", r.Method, r.URL, err)
-		}
-
-		return nil
-	} else {
-		body, err = io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("unable to parse response body for %s %s due to %s", r.Method, r.URL, err)
-		}
 	}
 
 	if erredResponse, ok := temp.(ErredResponse); ok {
